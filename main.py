@@ -87,13 +87,14 @@ def generate(input_text, approx_model_name, target_model_name, num_tokens=20, ga
     Decoder().set_tokenizer(tokenizer)
     
     print(f"begin loading models: \n {approx_model_name} \n {target_model_name}")
+    device = 0  # 统一到 cuda:0
     small_model = AutoModelForCausalLM.from_pretrained(approx_model_name, 
                                                        torch_dtype=torch.float16,
-                                                       device_map="auto",
+                                                       device_map={"": device},
                                                        trust_remote_code=True)
     large_model = AutoModelForCausalLM.from_pretrained(target_model_name, 
                                                        torch_dtype=torch.float16,
-                                                       device_map="auto",
+                                                       device_map={"": device},
                                                        trust_remote_code=True)
     print("finish loading models")
     

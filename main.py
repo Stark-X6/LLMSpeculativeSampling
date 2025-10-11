@@ -5,7 +5,7 @@ import contexttimer
 from colorama import Fore, Style
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-from sampling import autoregressive_sampling, speculative_sampling, speculative_sampling_v2
+from sampling import autoregressive_sampling, speculative_sampling, speculative_sampling_v2, speculative_sampling_bass_pad
 from globals import Decoder
 
 
@@ -40,12 +40,16 @@ def parse_arguments():
     parser.add_argument('--input', type=str, default="Any recommendations for my holidays in Abu Dhabi?")
     parser.add_argument('--approx_model_name', type=str, default=MODELZOO["bloom-560m"])
     parser.add_argument('--target_model_name', type=str, default=MODELZOO["bloom7b"])
-    parser.add_argument('--verbose', '-v', action='store_true', default=False, help='enable verbose mode')
+    parser.add_argument('--verbose', '-v', action='store_true', default=False, help='enable verbose mode') #详细日志开关
     parser.add_argument('--seed', '-s', type=int, default=None, help='set a random seed, which can makes the result reproducible')
     parser.add_argument('--benchmark', '-b', action='store_true', default=False, help='show benchmark results.')
     parser.add_argument('--profiling', '-p', action='store_true', default=False, help='collect torch profiler results.')
     parser.add_argument('--max_tokens', '-M', type=int, default=20, help='max token number generated.')
     parser.add_argument('--gamma', '-g', type=int, default=4, help='guess time.')
+    parser.add_argument('--bass', action='store_true', default=False, help='use BASS-PAD batched speculative decoding')
+    parser.add_argument('--batch', type=int, default=1, help='batch size')
+    parser.add_argument('--gamma-min', type=int, default=2)
+    parser.add_argument('--gamma-max', type=int, default=8)
     args = parser.parse_args()
     return args
 
@@ -77,7 +81,8 @@ def benchmark(fn, print_prefix, use_profiler=True, *args, **kwargs):
     print(f"\n [benchmark] {print_prefix}, tokens/sec: {len(output[0]) / t.elapsed / TEST_TIME}, {t.elapsed / TEST_TIME} sec generates {len(output[0])} tokens")
 
 def generate(input_text, approx_model_name, target_model_name, num_tokens=20, gamma = 4,
-             random_seed = None, verbose = False, use_benchmark = False, use_profiling = False):
+             random_seed = None, verbose = False, use_benchmark = False, use_profiling = False,
+             use_bass=False, batch=1, gamma_min=2, gamma_max=8):
     # NOTE() approx_model_name and target_model_name should use the same tokenizer!
     
     torch_device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -102,6 +107,13 @@ def generate(input_text, approx_model_name, target_model_name, num_tokens=20, ga
 
     top_k = 20
     top_p = 0.9
+
+    bad = {0}
+    for name in ("pad_token_id", "eos_token_id", "bos_token_id", "unk_token_id"):
+        tid = getattr(tokenizer, name, None)
+        if tid is not None:
+            bad.add(int(tid))
+    disallow_ids = tuple(sorted(bad))
 
     torch.manual_seed(123)
     output = autoregressive_sampling(input_ids, large_model, num_tokens, top_k = top_k, top_p=top_p)
@@ -135,8 +147,26 @@ def generate(input_text, approx_model_name, target_model_name, num_tokens=20, ga
         benchmark(speculative_sampling, "SP", use_profiling,
                   input_ids, small_model, large_model, max_len = num_tokens, gamma = gamma, top_k = top_k, top_p=top_p, random_seed = random_seed)
 
+    torch.manual_seed(123)
+    if use_bass or batch > 1:
+        prefixes = input_ids.repeat(batch, 1)
+        out, lengths = speculative_sampling_bass_pad(
+            prefixes, small_model, large_model,
+            max_new_tokens=num_tokens,
+            gamma_init=gamma, gamma_min=gamma_min, gamma_max=gamma_max,
+            top_k=top_k, top_p=top_p,
+            adapt_gamma=True, verbose=verbose,
+        )
+        # 打印前几条
+        for i in range(min(batch, 3)):
+            L = int(lengths[i].item())
+            txt = tokenizer.decode(out[i, :L], skip_special_tokens=True)
+            color_print(f"[BASS-PAD][{i}] {txt[:300]} ...")
+        # return out
+
 if __name__ == "__main__":
     args = parse_arguments()
     
     generate(args.input, args.approx_model_name, args.target_model_name, num_tokens=args.max_tokens, gamma=args.gamma,
-             random_seed = args.seed, verbose=args.verbose, use_benchmark = args.benchmark)
+             random_seed = args.seed, verbose=args.verbose, use_benchmark = args.benchmark,
+             use_bass=args.bass, batch=args.batch, gamma_min=args.gamma_min, gamma_max=args.gamma_max,)

@@ -1,6 +1,6 @@
 import torch
 
-class Singleton(type):
+class Singleton(type): #single tokenizer
     _instances = {}
 
     def __call__(cls, *args, **kwargs):

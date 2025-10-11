@@ -3,7 +3,7 @@ import torch
 from tqdm import tqdm
 from sampling.utils import norm_logits, sample
 
-@torch.no_grad()
+@torch.no_grad() #关闭自动求导跟踪，推理更省显存、更快；在纯推理里非常合适
 def autoregressive_sampling(x : torch.Tensor, model : torch.nn.Module, N : int, 
                             temperature : float = 1, top_k : int = 0, top_p : float = 0):
     n = len(x)

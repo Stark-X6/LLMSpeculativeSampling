@@ -20,7 +20,7 @@ def speculative_sampling_bass_pad(
     gamma_init: int = 4,
     gamma_min: int = 2,
     gamma_max: int = 8,
-    temperature: float = 1.0,
+    temperature: float = 0.7,
     top_k: int = 0,
     top_p: float = 0.0,
     adapt_gamma: bool = True,

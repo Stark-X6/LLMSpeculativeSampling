@@ -108,12 +108,23 @@ def generate(input_text, approx_model_name, target_model_name, num_tokens=20, ga
     top_k = 20
     top_p = 0.9
 
-    bad = {0}
-    for name in ("pad_token_id", "eos_token_id", "bos_token_id", "unk_token_id"):
-        tid = getattr(tokenizer, name, None)
-        if tid is not None:
-            bad.add(int(tid))
-    disallow_ids = tuple(sorted(bad))
+    torch.manual_seed(123)
+    if use_bass or batch > 1:
+        prefixes = input_ids.repeat(batch, 1)
+        out, lengths = speculative_sampling_bass_pad(
+            prefixes, small_model, large_model,
+            max_new_tokens=num_tokens,
+            gamma_init=gamma, gamma_min=gamma_min, gamma_max=gamma_max,
+            top_k=top_k, top_p=top_p,
+            adapt_gamma=True, verbose=verbose,
+            #disallow_ids=disallow_ids
+        )
+        # 打印前几条
+        for i in range(min(batch, 3)):
+            L = int(lengths[i].item())
+            txt = tokenizer.decode(out[i, :L], skip_special_tokens=True)
+            color_print(f"[BASS-PAD][{i}] {txt[:300]} ...")
+        return out
 
     torch.manual_seed(123)
     output = autoregressive_sampling(input_ids, large_model, num_tokens, top_k = top_k, top_p=top_p)
@@ -147,22 +158,6 @@ def generate(input_text, approx_model_name, target_model_name, num_tokens=20, ga
         benchmark(speculative_sampling, "SP", use_profiling,
                   input_ids, small_model, large_model, max_len = num_tokens, gamma = gamma, top_k = top_k, top_p=top_p, random_seed = random_seed)
 
-    torch.manual_seed(123)
-    if use_bass or batch > 1:
-        prefixes = input_ids.repeat(batch, 1)
-        out, lengths = speculative_sampling_bass_pad(
-            prefixes, small_model, large_model,
-            max_new_tokens=num_tokens,
-            gamma_init=gamma, gamma_min=gamma_min, gamma_max=gamma_max,
-            top_k=top_k, top_p=top_p,
-            adapt_gamma=True, verbose=verbose,
-        )
-        # 打印前几条
-        for i in range(min(batch, 3)):
-            L = int(lengths[i].item())
-            txt = tokenizer.decode(out[i, :L], skip_special_tokens=True)
-            color_print(f"[BASS-PAD][{i}] {txt[:300]} ...")
-        # return out
 
 if __name__ == "__main__":
     args = parse_arguments()

@@ -9,7 +9,7 @@ BASS-PAD 批量推测解码
 import torch
 from .batched_kvcache_model import BatchedKVCacheModel
 # 采样/差分归一化全部来自 utils_bass（避免重复）
-from .utils_bass import multinomial_sample, positive_diff_normalize
+from .utils_bass import multinomial_sample, positive_diff_normalize, DraftLengthHeuristic
 
 @torch.no_grad()
 def speculative_sampling_bass_pad(
@@ -41,7 +41,10 @@ def speculative_sampling_bass_pad(
     _ = small.forward_with_cache(input_ids)
     _ = large.forward_with_cache(input_ids)
 
-    gamma = gamma_init
+    heur = DraftLengthHeuristic()
+    heur.ldraft = int(gamma_init)  # 用传入初值作为启发式的 l0
+    gamma = heur.ldraft
+    round_id = 0
     acc_full_count = 0
     rej_count = 0
 
@@ -68,7 +71,7 @@ def speculative_sampling_bass_pad(
 
         # ===== 3) 每条序列独立接受/拒绝，得到 n_b =====
         n_vec = torch.empty(B, dtype=torch.long, device=device)
-        start = lengths.clone()
+        start = (lengths - 1).clamp_min(0).clone()
 
         for b in range(B):
             if done[b]:
@@ -77,8 +80,8 @@ def speculative_sampling_bass_pad(
             n = start[b] + gamma - 1
             for i in range(gamma):
                 j = input_ids[b, start[b] + i]
-                p = large.prob_history[b, start[b] + i - 1, j]
-                q = small.prob_history[b, start[b] + i - 1, j]
+                p = large.prob_history[b, start[b] + i, j]
+                q = small.prob_history[b, start[b] + i, j]
                 r = torch.rand((), device=device)
                 if r > (p / q).clamp(max=1.0):
                     n = start[b] + i - 1
@@ -127,17 +130,14 @@ def speculative_sampling_bass_pad(
         lengths = new_len + 1
         done = done | (lengths >= T_goal)
 
-        # ===== 6) γ 自适应（简易启发式）=====
-        if adapt_gamma:
-            if acc_full_count >= (B // 2):
-                gamma = min(gamma + 1, gamma_max)
-            if rej_count >= (B // 3):
-                gamma = max(gamma - 1, gamma_min)
-            acc_full_count = 0
-            rej_count = 0
+        # 论文算法 1：根据本轮各样本“被接受的草稿 token 数”更新下一轮 γ
+        x_vec = (n_vec - start + 1).clamp(min=0, max=gamma)
+        gamma = heur.step(x_vec)
 
         if verbose:
-            print(f"[BASS-PAD] active={(~done).sum().item()}, "
-                  f"gamma={gamma}, max_len={int(lengths.max().item())}")
+            x_max = int(x_vec.max().item())
+            print(f"[BASS-PAD] round={round_id + 1}, active={(~done).sum().item()}, "
+                     f"ldraft={gamma}, x_max={x_max}, max_len={int(lengths.max().item())}")
+        round_id += 1
 
     return input_ids, lengths

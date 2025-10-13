@@ -8,6 +8,7 @@ BASS 版工具函数（兼容层）
 
 import torch
 import torch.nn.functional as F
+import math
 
 # 复用原 demo 的基础实现
 try:
@@ -136,3 +137,48 @@ __all__ = [
     "sample",
     "max_fn",
 ]
+
+class DraftLengthHeuristic:
+    """
+    论文算法 1：自适应草稿长度 ldraft（内部自带默认超参，不从外部传参）
+      缺省：l0=7, lincre=2, lmod=10, llimit=32（论文经验值）
+    用法：
+      heur = DraftLengthHeuristic()          # 初始化
+      gamma = heur.ldraft                    # 当前 γ
+      gamma = heur.step(x_vec)               # 用本轮每样本被接受的草稿 token 数 x_vec 更新 γ
+    """
+    # 内置默认
+    _L0     = 7
+    _LINCRE = 2
+    _LMOD   = 10
+    _LLIMIT = 32
+
+    def __init__(self):
+        self.ldraft = int(self._L0)
+        self.lincre = int(self._LINCRE)
+        self.lmod   = int(self._LMOD)
+        self.llimit = int(self._LLIMIT)
+        self.s      = 0  # 上一轮是否走过“递减分支”的额外 -1
+
+    def step(self, x_vec: torch.Tensor) -> int:
+        """
+        x_vec: (B,) —— 本轮每样本被接受的草稿 token 数
+        返回：更新后的 ldraft（整数）
+        """
+        if x_vec.numel() == 0:
+            return self.ldraft
+        x_max = int(x_vec.max().item())
+
+        if x_max == self.ldraft:
+            # 满收：增长
+            self.ldraft = min(self.ldraft + self.lincre, self.llimit)
+            self.s = 0
+        else:
+            # 非满收：递减
+            dec = math.ceil(self.ldraft / self.lmod) + self.s
+            self.ldraft = self.ldraft - dec
+            # 不得小于 max(1, x_max, ldraft)
+            self.ldraft = max(1, x_max, self.ldraft)
+            self.s = 1
+
+        return self.ldraft

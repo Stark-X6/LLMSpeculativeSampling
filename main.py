@@ -28,7 +28,7 @@ MODELZOO = {
 
     # 组合 1: TinyLlama 1.1B (approx) + LLaMA-2 7B (target)
     "tinyllama1b": "/mnt/sevenT/qinggangw/xiayankang/Project/data/models/TinyLlama-1B",
-    "llama7b":     "/mnt/sevenT/qinggangw/xiayankang/Project/data/models/Llama-2-7B",
+    "llama7b":     "/mnt/sevenT/qinggangw/xiayankang/Project/data/models/Llama-2-7B-raw",
 
     # 组合 2: Bloom-560M (approx) + Bloomz-7B1 (target)
     "bloom-560m":  "/mnt/sevenT/qinggangw/xiayankang/Project/data/models/bloom-560m",
@@ -160,9 +160,9 @@ def generate(input_text, approx_model_name, target_model_name, num_tokens=20, ga
         out, lengths = speculative_sampling_bass_pad(
             prefixes, small_model, large_model,
             max_new_tokens=num_tokens,
-            gamma_init=gamma, gamma_min=gamma_min, gamma_max=gamma_max,
+            gamma_init=gamma,
             top_k=top_k, top_p=top_p,
-            adapt_gamma=True, verbose=verbose,
+            verbose=verbose,
         )
         t1 = perf_counter()
         metrics["BASS-PAD"] = _report_metrics("BASS-PAD", t0, t1, lengths, L0, B)

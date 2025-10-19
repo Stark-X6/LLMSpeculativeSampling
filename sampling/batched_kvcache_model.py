@@ -27,28 +27,50 @@ class BatchedKVCacheModel:
     def forward_with_cache(self, input_ids: torch.Tensor) -> torch.Tensor:
         """
         input_ids: (B, Lnew)
-        返回：新增段的概率 (B, Lnew, V)，并推进 past_key_values & prob_history
+        返回：本次新增段“最后一帧”的概率 (B, 1, V)，并推进 past_key_values & prob_history
+        关键点：
+        - 首轮/后续，无论 Lnew 有多少，都用逐 token 的方式推进 KV
+        - 对每个 token 都计算一次 logits → normalize_logits(...) → 追加到 prob_history
+        - 每步都把 prob_history 的时间维裁到与 KV 一致，防无界增长
         """
-        if self.past_key_values is None:
-            outputs = self.model(input_ids, use_cache=True)
-            probs = normalize_logits(
-                outputs.logits[:, -input_ids.size(1):, :],
+        B, T = input_ids.shape
+        last_probs = None
+
+        for t in range(T):
+            out = self.model(
+                input_ids[:, t:t + 1],
+                use_cache=True,
+                past_key_values=self.past_key_values,
+                output_attentions=False,
+                output_hidden_states=False,
+            )
+            self.past_key_values = out.past_key_values
+
+            # 只取本步（最后一帧）logits → 归一化成概率（含 temp/top_k/top_p）
+            probs_t = normalize_logits(
+                out.logits[:, -1:, :],  # (B, 1, V)
                 self.temperature, self.top_k, self.top_p
             )
-            self.past_key_values = outputs.past_key_values
-            self.prob_history = probs
-            return probs
-        else:
-            outputs = self.model(
-                input_ids, past_key_values=self.past_key_values, use_cache=True
-            )
-            probs = normalize_logits(
-                outputs.logits[:, -input_ids.size(1):, :],
-                self.temperature, self.top_k, self.top_p
-            )
-            self.past_key_values = outputs.past_key_values
-            self.prob_history = torch.cat([self.prob_history, probs], dim=1)
-            return probs
+            last_probs = probs_t  # 保留“最后一帧”作为本函数返回值
+
+            # 维护 prob_history：逐步追加
+            if self.prob_history is None:
+                self.prob_history = probs_t
+            else:
+                self.prob_history = torch.cat([self.prob_history, probs_t], dim=1)
+
+            # # 概率滑窗到 KV 时间维，保证与 past_key_values 对齐、避免无界增长
+            # k0 = self.past_key_values[0][0]
+            # T_kv = k0.shape[-1]  # 取 K 的时间维
+            # if self.prob_history.size(1) > T_kv:
+            #     self.prob_history = self.prob_history[:, -T_kv:, :]
+
+            # ★ 固定小滑窗：只保留最近 W=32 帧，避免 (B×L0×V) 爆显存
+            W = 24  # 可调：至少 ≥ 1 + 预期的最大 γ
+            if self.prob_history.size(1) > W:
+                self.prob_history = self.prob_history[:, -W:, :]
+
+        return last_probs  # (B, 1, V)
 
     @torch.no_grad()
     def generate(self, x: torch.Tensor, steps: int) -> torch.Tensor:

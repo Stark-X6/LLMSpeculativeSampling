@@ -16,14 +16,11 @@ def speculative_sampling_bass_pad(
     prefixes: torch.Tensor,                  # (B, L0)
     approx_model: torch.nn.Module,
     target_model: torch.nn.Module,
-    max_new_tokens: int = 32,
+    max_new_tokens: int = 20,
     gamma_init: int = 4,
-    gamma_min: int = 2,
-    gamma_max: int = 8,
     temperature: float = 0.7,
     top_k: int = 0,
     top_p: float = 0.0,
-    adapt_gamma: bool = True,
     verbose: bool = False,
 ):
     device = next(target_model.parameters()).device
@@ -43,13 +40,28 @@ def speculative_sampling_bass_pad(
 
     heur = DraftLengthHeuristic()
     heur.ldraft = int(gamma_init)  # 用传入初值作为启发式的 l0
-    gamma = heur.ldraft
+    # gamma = heur.ldraft
     round_id = 0
     acc_full_count = 0
     rej_count = 0
 
+    # ===== 固定 gamma 的开关（先用固定值，随时可切回启发式）=====
+    USE_FIXED_GAMMA = True
+    GAMMA_FIXED = 4  # 想用 3 就改成 3
+
     while True:
+        # 先决定“计划草稿长度” planned_gamma：固定值 or 启发式输出
+        if USE_FIXED_GAMMA:
+            planned_gamma = int(GAMMA_FIXED)
+        else:
+            planned_gamma = int(heur.ldraft)
+
         if (lengths >= T_goal).all():
+            break
+        # 计算剩余上限与本轮有效的草稿步数 gamma_eff
+        remain = (T_goal - lengths).clamp_min(0)  # (B,)
+        gamma_eff = int(min(planned_gamma, remain.max().item()))  # 如果没启用启发式，就把 heur.ldraft 换成当前 gamma
+        if gamma_eff <= 0:
             break
 
         active_mask = (~done).unsqueeze(1)  # (B,1)
@@ -57,17 +69,21 @@ def speculative_sampling_bass_pad(
         # ===== 1) 草稿：对未完成样本前进 γ 步 =====
         idx = (lengths - 1).clamp_min(0).view(-1, 1)  # (B,1)
         last = input_ids.gather(1, idx)  # (B,1)
-        for _ in range(gamma):
+        for _ in range(gamma_eff):
             probs_q = small.forward_with_cache(last)            # (B,1,V)
             next_q  = multinomial_sample(probs_q[:, -1, :])  # (B,1)
             next_q  = torch.where(active_mask, next_q, last)    # 完成样本长度不再变化
             input_ids = torch.cat([input_ids, next_q], dim=1)
             last = next_q
 
-        # ===== 2) 目标：验证这 γ 个新增位置（逐 token 喂入） =====
-        new_tail = input_ids[:, -gamma:]                        # (B, γ)
-        for t in range(gamma):
-            _ = large.forward_with_cache(new_tail[:, t:t+1])
+        # ===== 2) 目标：验证这 γ 个新增位置（逐 token 喂入，推进 KV & prob_history）=====
+        new_tail = input_ids[:, -gamma_eff:]  # (B, γ)
+        for t in range(gamma_eff):
+            _ = large.forward_with_cache(new_tail[:, t:t + 1])
+
+        # ★★★★★ 窗口基准：prob_history 的最后 γ 帧对应“本轮验证的 γ 个位置”
+        base = large.prob_history.size(1) - gamma_eff
+        assert base >= 0, "prob_history window too short; check W and gamma"
 
         # ===== 3) 每条序列独立接受/拒绝，得到 n_b =====
         n_vec = torch.empty(B, dtype=torch.long, device=device)
@@ -77,11 +93,11 @@ def speculative_sampling_bass_pad(
             if done[b]:
                 n_vec[b] = lengths[b] - 1
                 continue
-            n = start[b] + gamma - 1
-            for i in range(gamma):
+            n = start[b] + gamma_eff - 1
+            for i in range(gamma_eff):
                 j = input_ids[b, start[b] + i]
-                p = large.prob_history[b, start[b] + i, j]
-                q = small.prob_history[b, start[b] + i, j]
+                p = large.prob_history[b, base + i, j]
+                q = small.prob_history[b, base + i, j]
                 r = torch.rand((), device=device)
                 if r > (p / q).clamp(max=1.0):
                     n = start[b] + i - 1
@@ -96,10 +112,12 @@ def speculative_sampling_bass_pad(
                 t_tokens[b:b + 1, :] = input_ids[b:b + 1, last_idx:last_idx + 1]
                 continue
             n = int(n_vec[b].item())
-            if n < start[b] + gamma - 1:
+            if n < start[b] + gamma_eff - 1:
                 # 拒绝：差分重采
-                p = large.prob_history[b, n, :]
-                q = small.prob_history[b, n, :]
+                # 拒绝：在拒绝边界 n 处的“窗口内下标”
+                n_win = base + (n - start[b])  # ★ 由绝对索引换成窗口相对索引
+                p = large.prob_history[b, n_win, :]
+                q = small.prob_history[b, n_win, :]
                 t = multinomial_sample(positive_diff_normalize(p - q)).view(1, 1)
                 t_tokens[b:b+1, :] = t
                 rej_count += 1
@@ -131,13 +149,13 @@ def speculative_sampling_bass_pad(
         done = done | (lengths >= T_goal)
 
         # 论文算法 1：根据本轮各样本“被接受的草稿 token 数”更新下一轮 γ
-        x_vec = (n_vec - start + 1).clamp(min=0, max=gamma)
-        gamma = heur.step(x_vec)
+        x_vec = (n_vec - start + 1).clamp(min=0, max=gamma_eff)
+        # gamma_eff = heur.step(x_vec)
 
         if verbose:
             x_max = int(x_vec.max().item())
             print(f"[BASS-PAD] round={round_id + 1}, active={(~done).sum().item()}, "
-                     f"ldraft={gamma}, x_max={x_max}, max_len={int(lengths.max().item())}")
+                     f"ldraft={gamma_eff}, x_max={x_max}, max_len={int(lengths.max().item())}")
         round_id += 1
 
     return input_ids, lengths

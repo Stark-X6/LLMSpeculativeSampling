@@ -26,7 +26,7 @@ MODELZOO = {
 
     # 组合 1: TinyLlama 1.1B (approx) + LLaMA-2 7B (target)
     "tinyllama1b": "/mnt/sevenT/qinggangw/xiayankang/Project/data/models/TinyLlama-1B",
-    "llama7b":     "/mnt/sevenT/qinggangw/xiayankang/Project/data/models/Llama-2-7B",
+    "llama7b":     "/mnt/sevenT/qinggangw/xiayankang/Project/data/models/Llama-2-7B-raw",
 
     # 组合 2: Bloom-560M (approx) + Bloomz-7B1 (target)
     "bloom-560m":  "/mnt/sevenT/qinggangw/xiayankang/Project/data/models/bloom-560m",

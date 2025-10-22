@@ -33,19 +33,41 @@ def normalize_logits(
     top_p: float = 0.0,
 ) -> torch.Tensor:
     """
-    规范化 logits → probs：温度缩放 + TopK/TopP + softmax。
-    支持 (B,V) 与 (B,S,V)。返回与输入末维一致的概率张量。
+    规范化 logits → probs：温度缩放 + TopK/TopP + 稳定 softmax（支持 2D/3D）。
     """
-    if logits.dim() == 3:
-        B, S, V = logits.shape
-        out = torch.empty_like(logits)
-        for i in range(S):
-            out[:, i, :] = _orig_norm_logits(logits[:, i, :], temperature, top_k, top_p)
-        return out
-    elif logits.dim() == 2:
-        return _orig_norm_logits(logits, temperature, top_k, top_p)
-    else:
-        return _orig_norm_logits(logits.unsqueeze(0), temperature, top_k, top_p).squeeze(0)
+    # 统一成 (B, S, V) 处理
+    squeeze_back = False
+    if logits.dim() == 2:
+        logits = logits.unsqueeze(1)  # (B,1,V)
+        squeeze_back = True
+    elif logits.dim() == 1:
+        logits = logits.unsqueeze(0).unsqueeze(0)  # (1,1,V)
+        squeeze_back = True
+
+    B, S, V = logits.shape
+    # 温度保护，避免除以 0 或极小值
+    t = max(float(temperature), 1e-6)
+    # dtype 为 float32 做 softmax 更稳，再转回原 dtype
+    logits32 = logits.to(torch.float32) / t
+
+    # 逐步做 TopK/TopP 截断（对 logits）
+    for i in range(S):
+        _orig_top_k_top_p_filter(logits32[:, i, :], top_k=top_k, top_p=top_p)
+
+    # 稳定 softmax（减去 max）
+    probs = safe_softmax(logits32, dim=-1, dtype=torch.float32)
+    probs = probs.to(logits.dtype)
+
+    # 最后再做一次消毒 + 归一化，彻底去除 NaN/Inf/负数
+    probs = torch.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
+    probs = torch.clamp(probs, min=0.0)
+    denom = probs.sum(dim=-1, keepdim=True) + 1e-12
+    probs = probs / denom
+
+    if squeeze_back:
+        return probs.squeeze(1)
+    return probs
+
 
 def multinomial_sample(
     probs: torch.Tensor,

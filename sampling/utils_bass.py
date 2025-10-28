@@ -73,44 +73,55 @@ def multinomial_sample(
     probs: torch.Tensor,
     num_samples: int = 1,
     *,
-    disallow_ids: tuple[int, ...] = (0,),   # 默认屏蔽 id=0，但在极端情况下会自动回退
+    disallow_ids: tuple[int, ...] = (0,),
 ) -> torch.Tensor:
     """
     从概率分布采样（multinomial），兼容批量：
       - probs: (B, V) 或 (V,)
       - 返回: (B, num_samples) 或 (1, num_samples)
-    策略：
-      1) 保存原始分布 p0
-      2) 将 disallow_ids 概率置 0
-      3) 若某行清零后全为 0，则回退用 p0 那一行（不再屏蔽），保证可采样
-      4) 归一化后 multinomial
+
+    数值稳定增强版：
+      1) 屏蔽 disallow_ids；
+      2) 修复 NaN、负数；
+      3) 检查全 0 行并回退；
+      4) 自动归一化；
+      5) 若仍全 0，则退化为均匀分布；
+      6) 最后安全调用 torch.multinomial。
     """
     if probs.dim() == 1:
         probs = probs.unsqueeze(0)  # (1, V)
 
-    p0 = probs.clone()  # 保存原始分布，必要时回退
+    # 1) 克隆副本并屏蔽 disallow_ids
+    p0 = probs.clone()
     probs = probs.clone()
-
-    # 1) 屏蔽不允许的 token
     for tid in disallow_ids:
         if 0 <= tid < probs.size(-1):
-            probs[:, tid] = 0
+            probs[:, tid] = 0.0
 
-    # 2) 检查是否出现全 0 行
-    row_sums = probs.sum(dim=-1, keepdim=True)  # (B,1)
+    # 2) 清理 NaN、负数
+    probs = torch.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
+    probs = torch.clamp(probs, min=0.0)
+
+    # 3) 检查全 0 行并回退
+    row_sums = probs.sum(dim=-1, keepdim=True)
     need_fallback = (row_sums <= 0)
-
     if need_fallback.any():
-        # 对这些行恢复为原始分布（不再屏蔽）
         probs = torch.where(need_fallback, p0, probs)
         row_sums = probs.sum(dim=-1, keepdim=True)
 
-    # 3) 归一化（数值保护）
+    # 4) 归一化
     probs = probs / (row_sums + 1e-12)
 
-    # 4) 采样
-    out = torch.multinomial(probs, num_samples=num_samples)  # (B, num_samples)
-    return out if out.size(0) > 1 else out  # (1, num_samples) 时保持形状一致
+    # 5) 对仍为 0 的行退化成均匀分布（彻底兜底）
+    zero_rows = (probs.sum(dim=-1, keepdim=True) <= 0)
+    if zero_rows.any():
+        V = probs.size(-1)
+        uniform = torch.full_like(probs, 1.0 / V)
+        probs = torch.where(zero_rows, uniform, probs)
+
+    # 6) 安全采样
+    out = torch.multinomial(probs, num_samples=num_samples)
+    return out if out.size(0) > 1 else out
 
 def positive_diff_normalize(x: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
     """

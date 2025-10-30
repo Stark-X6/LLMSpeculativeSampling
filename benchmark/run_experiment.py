@@ -1,4 +1,4 @@
-# benchmark_bass/run_experiment.py
+# benchmark/run_experiment.py
 import os
 import torch
 import pandas as pd

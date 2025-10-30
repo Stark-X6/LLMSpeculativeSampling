@@ -1,10 +1,7 @@
-# benchmark_bass/metrics.py
+# benchmark/metrics.py
 import time
 import torch
 import numpy as np
-
-# ✅ 导入你任务一中实现的批处理推测解码函数
-# 路径根据你的项目结构（sampling/speculative_bass.py）调整
 from sampling.speculative_bass import speculative_sampling_bass_pad
 
 
@@ -20,16 +17,10 @@ def measure_performance(
     top_p: float = 0.9,
 ) -> dict:
     """
-    运行一次推测解码并测性能指标。
-    基于 speculative_sampling_bass_pad (BASS-PAD 批处理实现)。
+    Run a single BASS-PAD decoding and compute throughput/latency.
 
-    返回:
-        dict {
-            throughput: tokens/sec,
-            latency: ms/token,
-            draft_ratio / verify_ratio / qkv_ratio / attn_ratio / ffn_ratio: NaN (占位),
-            ttft / tpot: NaN (占位)
-        }
+    Returns:
+      dict with keys: throughput (tok/s), latency (ms/token), and placeholders for profiling ratios.
     """
 
     # === 1. CUDA 同步并开始计时 ===

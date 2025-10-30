@@ -3,3 +3,6 @@
 # JetBrains / PyCharm
 .idea/
 *.iml
+
+# ignore all experiment results
+results/

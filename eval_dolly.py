@@ -104,7 +104,6 @@ def main():
     ap.add_argument("--gamma_init", type=int, default=7, help="BASS 初始草稿长度（内部会启发式自调）")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--out_dir", default="dolly_eval_out")
-    # 默认不包含 AR，应老师要求仅比较推测解码三种
     ap.add_argument("--modes", default="DeepMind,Google,BASS",
                     help="逗号分隔，可选: DeepMind,Google,BASS（也支持 AR，如需加入）")
     ap.add_argument("--dataset_path", default="", help="本地 JSONL 路径（提供则优先使用本地）")

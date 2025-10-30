@@ -1,41 +1,38 @@
 # sampling/utils_bass.py
 """
-BASS 版工具函数（兼容层）
-- 复用 sampling/utils.py 的实现，统一对外命名，避免重复代码与命名发散
-- 新名：normalize_logits / multinomial_sample / positive_diff_normalize
-- 保留别名：norm_logits / sample / max_fn（为老代码平滑过渡）
+BASS 工具函数（自包含版本）
+- 统一暴露：normalize_logits / multinomial_sample / positive_diff_normalize / top_k_top_p_filter
+- 兼容别名：norm_logits / sample / max_fn
+- 去除对 sampling/utils.py 的依赖
 """
-
+import math
 import torch
 import torch.nn.functional as F
-import math
-
-# 复用原 demo 的基础实现
-try:
-    from .utils import top_k_top_p_filter as _orig_top_k_top_p_filter
-    from .utils import norm_logits       as _orig_norm_logits
-    from .utils import sample            as _orig_sample
-    from .utils import max_fn            as _orig_max_fn
-except Exception as e:
-    raise ImportError(
-        f"[utils_bass] 导入 sampling/utils.py 失败：{e}。"
-        "请确认 sampling/utils.py 存在且可以被包导入。"
-    )
 
 def top_k_top_p_filter(logits: torch.Tensor, top_k: int = 0, top_p: float = 0.0) -> torch.Tensor:
-    """与原实现一致：对 logits 做 Top-K/Top-P 截断（原地修改）。"""
-    return _orig_top_k_top_p_filter(logits, top_k=top_k, top_p=top_p)
+    """对 logits 做 Top-K/Top-P 截断（原地修改）。支持 2D (B,V) 张量。"""
+    if top_k > 0:
+        kth = torch.topk(logits, min(top_k, logits.size(-1)))[0]
+        logits[logits < kth[:, [-1]]] = float("-inf")
+    if top_p > 0.0:
+        sorted_logits, sorted_idx = torch.sort(logits, descending=True)
+        cum_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+        remove = cum_probs > top_p
+        remove[..., 1:] = remove[..., :-1].clone()
+        remove[..., 0] = 0
+        to_rm = remove.scatter(1, sorted_idx, remove)
+        logits[to_rm] = float("-inf")
+    return logits
 
-def normalize_logits(
-    logits: torch.Tensor,
-    temperature: float = 1.0,
-    top_k: int = 0,
-    top_p: float = 0.0,
-) -> torch.Tensor:
-    """
-    规范化 logits → probs：温度缩放 + TopK/TopP + 稳定 softmax（支持 2D/3D）。
-    """
-    # 统一成 (B, S, V) 处理
+def safe_softmax(logits: torch.Tensor, dim: int = -1, dtype: torch.dtype | None = None) -> torch.Tensor:
+    """数值稳定 softmax：减去 max 再 softmax，可选 dtype。"""
+    if dtype is not None and logits.dtype != dtype:
+        logits = logits.to(dtype)
+    z = logits - logits.max(dim=dim, keepdim=True).values
+    return F.softmax(z, dim=dim)
+
+def normalize_logits(logits: torch.Tensor, temperature: float = 1.0, top_k: int = 0, top_p: float = 0.0) -> torch.Tensor:
+    """规范化 logits → probs（支持 1D/2D/3D，内部按 (B,S,V) 处理）"""
     squeeze_back = False
     if logits.dim() == 2:
         logits = logits.unsqueeze(1)  # (B,1,V)
@@ -44,116 +41,68 @@ def normalize_logits(
         logits = logits.unsqueeze(0).unsqueeze(0)  # (1,1,V)
         squeeze_back = True
 
-    B, S, V = logits.shape
-    # 温度保护，避免除以 0 或极小值
     t = max(float(temperature), 1e-6)
-    # dtype 为 float32 做 softmax 更稳，再转回原 dtype
     logits32 = logits.to(torch.float32) / t
 
-    # 逐步做 TopK/TopP 截断（对 logits）
-    for i in range(S):
-        _orig_top_k_top_p_filter(logits32[:, i, :], top_k=top_k, top_p=top_p)
+    # 逐步做 TopK/TopP
+    for i in range(logits32.size(1)):
+        top_k_top_p_filter(logits32[:, i, :], top_k=top_k, top_p=top_p)
 
-    # 稳定 softmax（减去 max）
-    probs = safe_softmax(logits32, dim=-1, dtype=torch.float32)
-    probs = probs.to(logits.dtype)
+    probs = safe_softmax(logits32, dim=-1, dtype=torch.float32).to(logits.dtype)
+    probs = torch.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0).clamp_(min=0.0)
+    probs = probs / (probs.sum(dim=-1, keepdim=True) + 1e-12)
 
-    # 最后再做一次消毒 + 归一化，彻底去除 NaN/Inf/负数
-    probs = torch.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
-    probs = torch.clamp(probs, min=0.0)
-    denom = probs.sum(dim=-1, keepdim=True) + 1e-12
-    probs = probs / denom
+    return probs.squeeze(1) if squeeze_back else probs
 
-    if squeeze_back:
-        return probs.squeeze(1)
-    return probs
-
-
-def multinomial_sample(
-    probs: torch.Tensor,
-    num_samples: int = 1,
-    *,
-    disallow_ids: tuple[int, ...] = (0,),
-) -> torch.Tensor:
-    """
-    从概率分布采样（multinomial），兼容批量：
-      - probs: (B, V) 或 (V,)
-      - 返回: (B, num_samples) 或 (1, num_samples)
-
-    数值稳定增强版：
-      1) 屏蔽 disallow_ids；
-      2) 修复 NaN、负数；
-      3) 检查全 0 行并回退；
-      4) 自动归一化；
-      5) 若仍全 0，则退化为均匀分布；
-      6) 最后安全调用 torch.multinomial。
-    """
+def multinomial_sample(probs: torch.Tensor, num_samples: int = 1, *, disallow_ids: tuple[int, ...] = (0,)) -> torch.Tensor:
+    """安全采样：屏蔽非法 id、修复 NaN/负数、全 0 行回退、自动归一化。兼容 (B,V) 或 (V,)"""
     if probs.dim() == 1:
-        probs = probs.unsqueeze(0)  # (1, V)
+        probs = probs.unsqueeze(0)
 
-    # 1) 克隆副本并屏蔽 disallow_ids
     p0 = probs.clone()
     probs = probs.clone()
     for tid in disallow_ids:
         if 0 <= tid < probs.size(-1):
             probs[:, tid] = 0.0
 
-    # 2) 清理 NaN、负数
-    probs = torch.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
-    probs = torch.clamp(probs, min=0.0)
+    probs = torch.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0).clamp_(min=0.0)
 
-    # 3) 检查全 0 行并回退
     row_sums = probs.sum(dim=-1, keepdim=True)
     need_fallback = (row_sums <= 0)
     if need_fallback.any():
         probs = torch.where(need_fallback, p0, probs)
         row_sums = probs.sum(dim=-1, keepdim=True)
 
-    # 4) 归一化
     probs = probs / (row_sums + 1e-12)
 
-    # 5) 对仍为 0 的行退化成均匀分布（彻底兜底）
     zero_rows = (probs.sum(dim=-1, keepdim=True) <= 0)
     if zero_rows.any():
         V = probs.size(-1)
-        uniform = torch.full_like(probs, 1.0 / V)
-        probs = torch.where(zero_rows, uniform, probs)
+        probs = torch.where(zero_rows, torch.full_like(probs, 1.0 / V), probs)
 
-    # 6) 安全采样
     out = torch.multinomial(probs, num_samples=num_samples)
     return out if out.size(0) > 1 else out
 
 def positive_diff_normalize(x: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
-    """
-    归一化 max(x,0)。若和为 0，回退为均匀分布，避免数值问题。
-    用于推测解码的“拒绝后差分重采样”。
-    """
+    """归一化 max(x,0)；若和为 0，回退为均匀分布。"""
     x_pos = torch.where(x > 0, x, torch.zeros_like(x))
     s = x_pos.sum(dim=-1, keepdim=True)
     ok = (s > eps)
     out = torch.where(ok, x_pos / (s + eps), torch.zeros_like(x_pos))
     if (~ok).any():
         V = x.size(-1)
-        uniform = torch.full_like(x_pos, 1.0 / V)
-        out = torch.where(ok, out, uniform)
+        out = torch.where(ok, out, torch.full_like(x_pos, 1.0 / V))
     return out
 
-def safe_softmax(logits: torch.Tensor, dim: int = -1, dtype: torch.dtype | None = None) -> torch.Tensor:
-    """数值稳定的 softmax：减去 max 再 softmax，可选 dtype。"""
-    if dtype is not None and logits.dtype != dtype:
-        logits = logits.to(dtype)
-    z = logits - logits.max(dim=dim, keepdim=True).values
-    return F.softmax(z, dim=dim)
-
 def get_device(module_or_tensor) -> torch.device:
-    """统一设备获取：Module → next(parameters()).device；Tensor → tensor.device。"""
+    """Module → next(parameters()).device；Tensor → tensor.device。"""
     if hasattr(module_or_tensor, "parameters"):
         return next(module_or_tensor.parameters()).device
     if isinstance(module_or_tensor, torch.Tensor):
         return module_or_tensor.device
     raise TypeError("get_device expects a nn.Module or a torch.Tensor")
 
-# 兼容别名（旧 → 新），供老代码平滑过渡
+# 兼容别名
 norm_logits = normalize_logits
 sample = multinomial_sample
 max_fn = positive_diff_normalize
@@ -165,7 +114,6 @@ __all__ = [
     "positive_diff_normalize",
     "safe_softmax",
     "get_device",
-    # 别名
     "norm_logits",
     "sample",
     "max_fn",

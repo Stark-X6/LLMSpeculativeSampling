@@ -1,14 +1,13 @@
-# sampling/speculative_bass.py
 """
-BASS-PAD 批量推测解码
-- 流程：草稿 γ 步 → 目标验证 γ 步 → 每条接受/拒绝 → rollback → 继续
-- 仅在序列维做裁剪与 PAD，兼容任意 Causal LM（LLaMA/OPT/GPTNeoX/Qwen…）
-- 验证阶段逐 token 喂入，语义清晰；如需更快可改为 packed 段一次性验证
+BASS-PAD: Batched speculative decoding with PAD-only sequence alignment.
+
+- 草稿 γ 步 → 目标验证 γ 步 → 每条独立接受/拒绝 → rollback → 继续
+- 仅在序列维裁剪/补齐（PAD），兼容 LLaMA/OPT/GPTNeoX/Qwen/Bloom 等
+- 支持启发式 γ（DraftLengthHeuristic），默认先固定 γ
 """
 
 import torch
 from .batched_kvcache_model import BatchedKVCacheModel
-# 采样/差分归一化全部来自 utils_bass（避免重复）
 from .utils_bass import multinomial_sample, positive_diff_normalize, DraftLengthHeuristic
 
 @torch.no_grad()
@@ -23,6 +22,21 @@ def speculative_sampling_bass_pad(
     top_p: float = 0.0,
     verbose: bool = False,
 ):
+    """
+        Batched speculative decoding (PAD alignment).
+
+        Args:
+          prefixes: (B, L0) batch input ids.
+          approx_model, target_model: two causal LMs sharing tokenizer.
+          max_new_tokens: total new tokens per sequence.
+          gamma_init: initial draft length.
+          temperature, top_k, top_p: sampling params.
+          verbose: print per-round stats.
+
+        Returns:
+          output_ids: (B, L_out_max) padded output ids.
+          lengths: (B,) final lengths for each sequence.
+        """
     device = next(target_model.parameters()).device
     B, L0 = prefixes.shape
     input_ids = prefixes.to(device)
@@ -47,7 +61,7 @@ def speculative_sampling_bass_pad(
 
     # ===== 固定 gamma 的开关（先用固定值，随时可切回启发式）=====
     USE_FIXED_GAMMA = True
-    GAMMA_FIXED = 4  # 想用 3 就改成 3
+    GAMMA_FIXED = 4
 
     while True:
         # 先决定“计划草稿长度” planned_gamma：固定值 or 启发式输出

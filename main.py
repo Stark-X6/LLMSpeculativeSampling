@@ -15,24 +15,14 @@ from globals import Decoder
 # my local models
 MODELZOO = {
     # llama-1
-    # https://huggingface.co/PY007/TinyLlama-1.1B-step-50K-105b
-    # "llama1b": "/share_nfs/fangjiarui/root/code/hf_models/TinyLlama-1.1B-step-50K-105b",
-    # "llama7b": "/share_nfs/tianzhi/code/llama-7b",
-    # "llama30b": "/share_nfs/fangjiarui/root/code/hf_models/llama-30b-hf",
-    # "llama2-7b" : "/share_nfs/fangjiarui/root/code/hf_models/llama-2-7b-hf",
-    # "llama2-70b" : "/share_nfs/fangjiarui/root/code/hf_models/llama-2-70b-hf",
-    # "bloom-560m": "/share_nfs/fangjiarui/root/code/hf_models/bloom-560m",
-    # "bloom7b": "/share_nfs/fangjiarui/root/code/hf_models/bloomz-7b1",
-    # "baichuan-7b": "/share_nfs/duanqiyuan/models/source_models/hf/baichuan-7B",
-    # "baichuan-13b": "/share_nfs/duanqiyuan/models/source_models/hf/Baichuan-13B-Base",
 
     # 组合 1: TinyLlama 1.1B (approx) + LLaMA-2 7B (target)
-    "tinyllama1b": "/mnt/sevenT/qinggangw/xiayankang/Project/data/models/TinyLlama-1B",
-    "llama7b":     "/mnt/sevenT/qinggangw/xiayankang/Project/data/models/Llama-2-7B-raw",
+    "tinyllama1b": "../data/models/TinyLlama-1B",
+    "llama7b":     "../data/models/Llama-2-7B-raw",
 
     # 组合 2: Bloom-560M (approx) + Bloomz-7B1 (target)
-    "bloom-560m":  "/mnt/sevenT/qinggangw/xiayankang/Project/data/models/bloom-560m",
-    "bloom7b":     "/mnt/sevenT/qinggangw/xiayankang/Project/data/models/bloomz-7b1",
+    "bloom-560m":  "../data/models/bloom-560m",
+    "bloom7b":     "../data/models/bloomz-7b1",
 }
 
 def parse_arguments():

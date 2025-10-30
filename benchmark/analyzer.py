@@ -1,9 +1,12 @@
-# benchmark_bass/analyzer.py
+"""
+Plot & summarize benchmark results for BASS experiments.
+"""
 import os
 import pandas as pd
 import matplotlib.pyplot as plt
 from .utils_io import ensure_dir, log_message
-
+import matplotlib
+matplotlib.use("Agg")  # 无 GUI 环境下也能保存图片
 
 def save_results(df: pd.DataFrame, path: str):
     ensure_dir(os.path.dirname(path))
@@ -149,7 +152,7 @@ def plot_sorted_vs_unsorted(df_all: pd.DataFrame, plots_dir: str):
     """
     ensure_dir(plots_dir)
 
-    # ✅ 为不同指标设定不同 batch size
+    # 为不同指标设定不同 batch size
     metric_bs_map = {
         "latency": 4,
         "throughput": 8,

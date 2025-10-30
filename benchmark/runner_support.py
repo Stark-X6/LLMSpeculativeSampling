@@ -1,19 +1,24 @@
-# benchmark_bass/runner_support.py
+"""
+Model/data setup & batch preparation for benchmark experiments.
+"""
+
 from typing import Tuple, Dict, Any
 import numpy as np
 import torch
 from datasets import load_dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM
+import matplotlib
+matplotlib.use("Agg")
 
 # ===== 模型路径 =====
 MODELZOO = {
     "bloom": {
-        "approx": "/mnt/sevenT/qinggangw/xiayankang/Project/data/models/bloom-560m",
-        "target": "/mnt/sevenT/qinggangw/xiayankang/Project/data/models/bloomz-7b1",
+        "approx": "../data/models/bloom-560m",
+        "target": "../data/models/bloomz-7b1",
     },
     "llama": {
-        "approx": "/mnt/sevenT/qinggangw/xiayankang/Project/data/models/TinyLlama-1B",
-        "target": "/mnt/sevenT/qinggangw/xiayankang/Project/data/models/Llama-2-7b-raw",
+        "approx": "../data/models/TinyLlama-1B",
+        "target": "../data/models/Llama-2-7b-raw",
     }
 }
 
@@ -30,7 +35,7 @@ def format_prompt(inst: str, ctx: str) -> str:
 
 def setup_models(model_pair: str):
     """加载小模型和大模型（保持两侧 tokenizer 一致）"""
-    device = 3  # cuda:0
+    device = 0 if torch.cuda.is_available() else "cpu"
     approx_path = MODELZOO[model_pair]["approx"]
     target_path = MODELZOO[model_pair]["target"]
 
@@ -53,23 +58,23 @@ def prepare_batch(
     batch_size: int,
     ctx_len: int,
     offset: int = 0,
-    dataset_path: str = "/mnt/sevenT/qinggangw/xiayankang/Project/data/dataset/dolly/databricks-dolly-15k.jsonl",
+    dataset_path: str = "../data/dataset/dolly/databricks-dolly-15k.jsonl",
 ) -> Tuple[torch.Tensor, Dict[str, float]]:
     """
     从 Dolly 数据集中构造一个 batch。
 
-    ✅ 全局排序逻辑：
-        - 若 sorted_flag == 1：
-            先对整个数据集按输入长度升序排列，
-            再从排序后的列表中连续取 batch。
-        - 若 sorted_flag == 0：
-            保持原始顺序，仅随机取起点（模拟无序输入）。
+    全局排序逻辑：
+    - 若 sorted_flag == 1：
+        先对整个数据集按输入长度升序排列，
+        再从排序后的列表中连续取 batch。
+    - 若 sorted_flag == 0：
+        保持原始顺序，仅随机取起点（模拟无序输入）。
 
-    ✅ 特点：
-        - 每个 batch 内样本是连续取的；
-        - 不同 batch 之间不会重叠；
-        - 排序/不排序逻辑对齐；
-        - 输出输入长度统计。
+    特点：
+    - 每个 batch 内样本是连续取的；
+    - 不同 batch 之间不会重叠；
+    - 排序/不排序逻辑对齐；
+    - 输出输入长度统计。
     """
     # === 1. 加载本地 Dolly 数据集 ===
     ds = load_dataset("json", data_files={"train": dataset_path}, split="train")
@@ -78,7 +83,7 @@ def prepare_batch(
     # === 2. 生成所有 prompt 并计算长度 ===
     prompts = [format_prompt(ex.get("instruction", ""), ex.get("context", "")) for ex in ds]
 
-    # ⚠️ 不返回 tensor，只取每条样本长度
+    # 不返回 tensor，只取每条样本长度
     encodings = tokenizer(
         prompts,
         padding=False,

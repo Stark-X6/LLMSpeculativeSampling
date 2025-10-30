@@ -1,4 +1,4 @@
-# benchmark_bass/utils_io.py
+# benchmark/utils_io.py
 import os
 import json
 import shutil

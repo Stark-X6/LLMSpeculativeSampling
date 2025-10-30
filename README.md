@@ -1,3 +1,20 @@
+# BASS++: Efficient Speculative Decoding with Dynamic Batching
+
+This repository provides a clean implementation of speculative decoding and BASS-based batched inference, developed for AIC Algorithm Innovation Track.
+
+## Features
+- Google & DeepMind speculative decoding variants
+- BASS-PAD: batched attention-optimized speculative sampling
+- Dynamic draft length (γ) scheduling
+- Optional Flask-based demo serving
+
+## License
+This project is based on FeiFeiBear's open-source demo under the [Apache 2.0 License](LICENSE.txt).
+
+## Citation
+- Leviathan et al., *Fast Inference from Transformers via Speculative Decoding*, ICML 2023.
+- Chen et al., *Accelerating Large Language Model Decoding with Speculative Sampling*, arXiv 2023.
+
 # Fast inference from transformers via speculative decoding
 
 This repository implements speculative sampling for large language model (LLM) decoding. It utilizes two models during the decoding process: a target model and an approximation model. The approximation model is a smaller model, while the target model is a larger one. The approximation model generates token guesses, and the target model corrects these guesses. This approach allows for decoding by running the target model in parallel on the outputs of the approximation models, resulting in improved efficiency compared to decoding with the target model alone.

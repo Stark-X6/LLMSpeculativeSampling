@@ -1,8 +1,9 @@
-# sampling/batched_kvcache_model.py
 """
-批量 KV 缓存容器（BASS-PAD）
-- 仅在序列维 S 上裁剪/补齐，兼容任意 Causal LM（LLaMA/OPT/GPTNeoX/Qwen…）
-- 对 Bloom 的 KV 形状用“按维度判断”的方式兼容
+BatchedKVCacheModel
+
+- 批量 KV Cache 容器（Bloom 与标准布局兼容）
+- forward_with_cache: 逐 token 推进 KV & 维护概率滑窗
+- rollback: 按每条序列 end_pos_vec 裁剪（仅序列维）
 """
 
 import torch
@@ -10,8 +11,6 @@ from typing import List, Tuple
 
 # 工具函数全部来自 utils_bass（避免重复定义）
 from .utils_bass import normalize_logits, multinomial_sample
-
-from transformers.models.bloom.modeling_bloom import BloomForCausalLM
 
 class BatchedKVCacheModel:
     def __init__(self, model: torch.nn.Module,

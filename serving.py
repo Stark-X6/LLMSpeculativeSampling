@@ -56,8 +56,8 @@ def predict():
 
 if __name__ == '__main__':
     GLOBAL_SERVER = Server(
-        approx_model_name="/mnt/sevenT/qinggangw/xiayankang/Project/data/models/bloom-560m",
-        target_model_name="/mnt/sevenT/qinggangw/xiayankang/Project/data/models/bloomz-7b1"
+        approx_model_name="../data/models/bloom-560m",
+        target_model_name="../data/models/bloomz-7b1"
     )
     # Start the Flask service
     app.run(host='0.0.0.0', port=5000)

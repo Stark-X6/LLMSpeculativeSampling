@@ -4,7 +4,7 @@ Plot & summarize benchmark results for BASS experiments.
 import os
 import pandas as pd
 import matplotlib.pyplot as plt
-from .utils_io import ensure_dir, log_message
+from benchmark.utils_io import ensure_dir, log_message
 import matplotlib
 matplotlib.use("Agg")  # 无 GUI 环境下也能保存图片
 

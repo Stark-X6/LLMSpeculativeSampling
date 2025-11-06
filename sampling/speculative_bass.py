@@ -21,22 +21,24 @@ def speculative_sampling_bass_pad(
     top_k: int = 0,
     top_p: float = 0.0,
     verbose: bool = False,
+    use_heuristic_gamma: bool = False,       # ✅ 新增：是否使用启发式 gamma
 ):
     """
-        Batched speculative decoding (PAD alignment).
+    Batched speculative decoding (PAD alignment) with optional heuristic gamma.
 
-        Args:
-          prefixes: (B, L0) batch input ids.
-          approx_model, target_model: two causal LMs sharing tokenizer.
-          max_new_tokens: total new tokens per sequence.
-          gamma_init: initial draft length.
-          temperature, top_k, top_p: sampling params.
-          verbose: print per-round stats.
+    Args:
+      prefixes: (B, L0) batch input ids.
+      approx_model, target_model: two causal LMs sharing tokenizer.
+      max_new_tokens: total new tokens per sequence.
+      gamma_init: initial draft length.
+      temperature, top_k, top_p: sampling params.
+      verbose: print per-round stats.
+      use_heuristic_gamma: if True, use DraftLengthHeuristic to adaptively adjust gamma.
 
-        Returns:
-          output_ids: (B, L_out_max) padded output ids.
-          lengths: (B,) final lengths for each sequence.
-        """
+    Returns:
+      output_ids: (B, L_out_max) padded output ids.
+      lengths: (B,) final lengths for each sequence.
+    """
     device = next(target_model.parameters()).device
     B, L0 = prefixes.shape
     input_ids = prefixes.to(device)
@@ -48,58 +50,54 @@ def speculative_sampling_bass_pad(
     small = BatchedKVCacheModel(approx_model, temperature, top_k, top_p)
     large = BatchedKVCacheModel(target_model, temperature, top_k, top_p)
 
-    # prefill：建立两侧 KV 与 prob_history
+    # prefill
     _ = small.forward_with_cache(input_ids)
     _ = large.forward_with_cache(input_ids)
 
     heur = DraftLengthHeuristic()
-    heur.ldraft = int(gamma_init)  # 用传入初值作为启发式的 l0
-    # gamma = heur.ldraft
+    heur.ldraft = int(gamma_init)
     round_id = 0
     acc_full_count = 0
     rej_count = 0
 
-    # ===== 固定 gamma 的开关（先用固定值，随时可切回启发式）=====
-    USE_FIXED_GAMMA = True
-    GAMMA_FIXED = 4
+    # 新逻辑：初始化 gamma 并选择模式
+    gamma_cur = int(gamma_init)
 
     while True:
-        # 先决定“计划草稿长度” planned_gamma：固定值 or 启发式输出
-        if USE_FIXED_GAMMA:
-            planned_gamma = int(GAMMA_FIXED)
+        # 1️⃣ 确定本轮 gamma
+        if use_heuristic_gamma:
+            planned_gamma = int(max(1, heur.ldraft))
         else:
-            planned_gamma = int(heur.ldraft)
+            planned_gamma = int(gamma_cur)
 
         if (lengths >= T_goal).all():
             break
-        # 计算剩余上限与本轮有效的草稿步数 gamma_eff
-        remain = (T_goal - lengths).clamp_min(0)  # (B,)
-        gamma_eff = int(min(planned_gamma, remain.max().item()))  # 如果没启用启发式，就把 heur.ldraft 换成当前 gamma
+
+        remain = (T_goal - lengths).clamp_min(0)
+        gamma_eff = int(min(planned_gamma, remain.max().item()))
         if gamma_eff <= 0:
             break
 
-        active_mask = (~done).unsqueeze(1)  # (B,1)
+        active_mask = (~done).unsqueeze(1)
 
-        # ===== 1) 草稿：对未完成样本前进 γ 步 =====
-        idx = (lengths - 1).clamp_min(0).view(-1, 1)  # (B,1)
-        last = input_ids.gather(1, idx)  # (B,1)
+        # 2️⃣ 草稿阶段
+        idx = (lengths - 1).clamp_min(0).view(-1, 1)
+        last = input_ids.gather(1, idx)
         for _ in range(gamma_eff):
-            probs_q = small.forward_with_cache(last)            # (B,1,V)
-            next_q  = multinomial_sample(probs_q[:, -1, :])  # (B,1)
-            next_q  = torch.where(active_mask, next_q, last)    # 完成样本长度不再变化
+            probs_q = small.forward_with_cache(last)
+            next_q  = multinomial_sample(probs_q[:, -1, :])
+            next_q  = torch.where(active_mask, next_q, last)
             input_ids = torch.cat([input_ids, next_q], dim=1)
             last = next_q
 
-        # ===== 2) 目标：验证这 γ 个新增位置（逐 token 喂入，推进 KV & prob_history）=====
-        new_tail = input_ids[:, -gamma_eff:]  # (B, γ)
+        # 3️⃣ 验证阶段
+        new_tail = input_ids[:, -gamma_eff:]
         for t in range(gamma_eff):
             _ = large.forward_with_cache(new_tail[:, t:t + 1])
 
-        # ★★★★★ 窗口基准：prob_history 的最后 γ 帧对应“本轮验证的 γ 个位置”
         base = large.prob_history.size(1) - gamma_eff
         assert base >= 0, "prob_history window too short; check W and gamma"
 
-        # ===== 3) 每条序列独立接受/拒绝，得到 n_b =====
         n_vec = torch.empty(B, dtype=torch.long, device=device)
         start = (lengths - 1).clamp_min(0).clone()
 
@@ -118,7 +116,7 @@ def speculative_sampling_bass_pad(
                     break
             n_vec[b] = n
 
-        # ===== 4) 差分重采 or 全接收再采 1 步 =====
+        # 4️⃣ 接受/拒绝生成
         t_tokens = torch.empty(B, 1, dtype=torch.long, device=device)
         for b in range(B):
             if done[b]:
@@ -127,49 +125,45 @@ def speculative_sampling_bass_pad(
                 continue
             n = int(n_vec[b].item())
             if n < start[b] + gamma_eff - 1:
-                # 拒绝：差分重采
-                # 拒绝：在拒绝边界 n 处的“窗口内下标”
-                n_win = base + (n - start[b])  # ★ 由绝对索引换成窗口相对索引
+                n_win = base + (n - start[b])
                 p = large.prob_history[b, n_win, :]
                 q = small.prob_history[b, n_win, :]
                 t = multinomial_sample(positive_diff_normalize(p - q)).view(1, 1)
                 t_tokens[b:b+1, :] = t
                 rej_count += 1
             else:
-                # 全接收：用目标分布的“最新一格”再采 1 步（防越界）
                 last_idx = large.prob_history.size(1) - 1
                 t = multinomial_sample(large.prob_history[b, last_idx, :]).view(1, 1)
                 t_tokens[b:b+1, :] = t
                 acc_full_count += 1
 
-        # 5) 先把 KV 回滚到 n_b（仅保留“最后接受的位置”，不包含 t）
-        kv_end = n_vec  # 注意：此处 end_pos = n_b
+        # 5️⃣ 回滚 KV
+        kv_end = n_vec
         small.rollback(kv_end)
         large.rollback(kv_end)
 
-        # 再把输入裁剪到 n_b+1（含最后接受的位置），并拼接 t（此时 KV 还落后一位）
+        # 拼接 t
         new_len = n_vec + 1
         rows = []
         for b in range(B):
             keep = int(new_len[b].item())
             rows.append(torch.cat([input_ids[b:b+1, :keep], t_tokens[b:b+1, :]], dim=1))
 
-        # PAD 到同宽（BASS-PAD）
         max_w = max(r.size(1) for r in rows)
         rows_pad = [torch.nn.functional.pad(r, (0, max_w - r.size(1))) for r in rows]
         input_ids = torch.cat(rows_pad, dim=0)
-
         lengths = new_len + 1
         done = done | (lengths >= T_goal)
 
-        # 论文算法 1：根据本轮各样本“被接受的草稿 token 数”更新下一轮 γ
+        # 6️⃣ 启发式更新（仅启用时）
         x_vec = (n_vec - start + 1).clamp(min=0, max=gamma_eff)
-        # gamma_eff = heur.step(x_vec)
+        if use_heuristic_gamma:
+            heur.step(x_vec)
 
         if verbose:
             x_max = int(x_vec.max().item())
-            print(f"[BASS-PAD] round={round_id + 1}, active={(~done).sum().item()}, "
-                     f"ldraft={gamma_eff}, x_max={x_max}, max_len={int(lengths.max().item())}")
+            print(f"[BASS-PAD] round={round_id + 1}, gamma={planned_gamma}, x_max={x_max}, "
+                  f"active={(~done).sum().item()}, max_len={int(lengths.max().item())}")
         round_id += 1
 
     return input_ids, lengths

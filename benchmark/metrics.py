@@ -28,17 +28,32 @@ def measure_performance(
     t0 = time.time()
 
     # === 2. 调用你的 BASS 批处理推测解码函数 ===
-    out_ids, out_lengths = speculative_sampling_bass_pad(
-        prefixes=batch_input_ids,
-        approx_model=draft_model,
-        target_model=target_model,
-        max_new_tokens=max_new_tokens,
-        gamma_init=gamma if isinstance(gamma, int) else 4,  # 启发式时默认初始值 4
-        temperature=temperature,
-        top_k=top_k,
-        top_p=top_p,
-        verbose=False,
-    )
+    if gamma == "heuristic" :
+        out_ids, out_lengths = speculative_sampling_bass_pad(
+            prefixes=batch_input_ids,
+            approx_model=draft_model,
+            target_model=target_model,
+            max_new_tokens=max_new_tokens,
+            gamma_init= 4,  # 启发式时默认初始值 4
+            temperature=temperature,
+            top_k=top_k,
+            top_p=top_p,
+            verbose=False,
+            use_heuristic_gamma=True,
+        )
+    else :
+        out_ids, out_lengths = speculative_sampling_bass_pad(
+            prefixes=batch_input_ids,
+            approx_model=draft_model,
+            target_model=target_model,
+            max_new_tokens=max_new_tokens,
+            gamma_init=4,
+            temperature=temperature,
+            top_k=top_k,
+            top_p=top_p,
+            verbose=False,
+            use_heuristic_gamma=False,
+        )
 
     # === 3. 结束计时 ===
     torch.cuda.synchronize()

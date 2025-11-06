@@ -1,9 +1,9 @@
 from typing import Dict, Any, List
 import numpy as np
 
-from .metrics import measure_performance
-from .utils_io import log_message
-from .runner_support import prepare_batch
+from benchmark.metrics import measure_performance
+from benchmark.utils_io import log_message
+from benchmark.runner_support import prepare_batch
 
 
 def average_metrics(list_of_metrics: List[Dict[str, Any]]) -> Dict[str, Any]:

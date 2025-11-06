@@ -4,14 +4,14 @@ import torch
 import pandas as pd
 from datetime import datetime
 
-from .runner import run_single_experiment
-from .runner_support import setup_models
-from .analyzer import (
+from benchmark.runner import run_single_experiment
+from benchmark.runner_support import setup_models
+from benchmark.analyzer import (
     save_results, summarize_length_stats, summarize_heuristic_gamma,
     plot_latency_vs_gamma, plot_throughput_vs_gamma,
     plot_stage_ratio, plot_sorted_vs_unsorted
 )
-from .utils_io import ensure_dir, symlink_latest, log_message
+from benchmark.utils_io import ensure_dir, symlink_latest, log_message
 
 
 def main():
@@ -70,7 +70,7 @@ def main():
                     sorted_flag=sorted_flag,
                     repeat=repeat,
                     ctx_len=ctx_len,
-                    max_new_tokens=max_new_tokens
+                    max_new_tokens=max_new_tokens,
                 )
                 heur_rows.append(heur_row)
 

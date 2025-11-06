@@ -1,9 +1,5 @@
 """
-Dynamic Batch Scheduler (pure serial, main-thread only)
--------------------------------------------------------------
-✅ 所有操作在主线程完成 —— 不再使用多线程
-✅ 模拟 Dolly 输入流
-✅ 支持 dynamic / fixed 两种模式
+Dynamic Batch Scheduler
 """
 
 import os

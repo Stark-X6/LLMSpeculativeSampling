@@ -8,14 +8,14 @@ import torch
 import pandas as pd
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-# 复用你已有的动态分批与流模拟
+# 动态分批与流模拟
 from sampling.dynamic_batcher import (
     BucketBatchScheduler,
     load_dolly_dataset,
     simulate_stream,
 )
 
-# 直接调用你的 BASS-PAD 推理实现（我们只在这里切换 use_heuristic_gamma）
+# 直接调用 BASS-PAD 推理实现（只在这里切换 use_heuristic_gamma）
 from sampling.speculative_bass import speculative_sampling_bass_pad
 
 
@@ -25,7 +25,7 @@ def make_process_fn(tokenizer, small_model, large_model, device, *,
                     use_heuristic_gamma: bool = False):
     """
     返回一个 process_fn(batch, gamma_init=4)：
-    - 兼容你的 simulate_stream / InferenceWorker 传入的 (batch, gamma_init) 调用方式
+    - 兼容 simulate_stream / InferenceWorker 传入的 (batch, gamma_init) 调用方式
     - 在内部调用 speculative_bass_pad(..., use_heuristic_gamma=flag)
     - 将每批的吞吐、延迟、γ 等写入 CSV
     """
@@ -51,8 +51,8 @@ def make_process_fn(tokenizer, small_model, large_model, device, *,
                 approx_model=small_model,
                 target_model=large_model,
                 max_new_tokens=max_new_tokens,
-                gamma_init=int(gamma_init),           # 起始 γ（若 simulate_stream 传了就用）
-                use_heuristic_gamma=use_heuristic_gamma,  # 这里切换启发式开/关
+                gamma_init=int(gamma_init),           # 起始 γ
+                use_heuristic_gamma=use_heuristic_gamma,  # 切换启发式开/关
             )
         t1 = time.perf_counter()
 

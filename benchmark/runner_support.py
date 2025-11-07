@@ -35,7 +35,7 @@ def format_prompt(inst: str, ctx: str) -> str:
 
 def setup_models(model_pair: str):
     """加载小模型和大模型（保持两侧 tokenizer 一致）"""
-    device = 0 if torch.cuda.is_available() else "cpu"
+    device = 3 if torch.cuda.is_available() else "cpu"
     approx_path = MODELZOO[model_pair]["approx"]
     target_path = MODELZOO[model_pair]["target"]
 

@@ -21,7 +21,7 @@ def speculative_sampling_bass_pad(
     top_k: int = 0,
     top_p: float = 0.0,
     verbose: bool = False,
-    use_heuristic_gamma: bool = False,       # ✅ 新增：是否使用启发式 gamma
+    use_heuristic_gamma: bool = False,       # 是否使用启发式 gamma
 ):
     """
     Batched speculative decoding (PAD alignment) with optional heuristic gamma.

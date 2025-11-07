@@ -9,6 +9,7 @@ import random
 import uuid
 import argparse
 import torch
+import numpy as np
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
 
@@ -115,6 +116,7 @@ class BucketBatchScheduler:
 
     def add_request(self, req: Request):
         self.buffer.append(req)
+        print(f"[REQ] len={len(req.input_ids)}  time={req.arrive_time:.2f}")
 
     def _get_bucket_bs(self, length):
         for (lo, hi), bs in self.bucket_config.items():
@@ -145,7 +147,7 @@ class BucketBatchScheduler:
                 if len(cur) == bs:
                     ready_batches.append(cur)
                     cur = []
-            remain.extend(cur)
+                    remain.extend(cur)
 
         # 更新缓冲区
         batched_ids = {r.req_id for batch in ready_batches for r in batch}
@@ -195,7 +197,7 @@ def load_dolly_dataset(path, tokenizer, max_samples=None, seed=42):
 # ==============================
 # 批推理函数
 # ==============================
-def process_batch_fn(batch, small_model, large_model, tokenizer, device, max_new_tokens=20):
+def process_batch_fn(batch, small_model, large_model, tokenizer, device, max_new_tokens=12):
     from sampling.speculative_bass import speculative_sampling_bass_pad
     DEVICE = device
     B = len(batch)
@@ -289,6 +291,7 @@ def simulate_stream(dataset, scheduler, process_fn, mode="dynamic", device="cuda
             for b in batches:
                 worker.put(b)
                 consumed += len(b)
+                print(f"[ENQUEUE] batch={len(b)} avg_len={np.mean([len(r.input_ids) for r in b]):.1f}")
 
             # 退出条件：输入发完 + 缓冲区空 + 队列空
             no_more_input = (not input_thread.is_alive())

@@ -6,185 +6,223 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 import logging
 import time
 from sampling import autoregressive_sampling, speculative_sampling, speculative_sampling_v2, speculative_sampling_bass_pad
+import argparse
+import subprocess, threading, json
+from queue import Queue
 
+log_queue = Queue()
+process_thread = None
+simulation_running = False
 app = Flask(__name__)
 @app.route("/")
 def home():
     return render_template_string("""
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<title>BASS++ 推测推理演示系统</title>
-<style>
-    body {
-        font-family: 'Segoe UI', Arial, sans-serif;
-        background: linear-gradient(135deg, #d7f0d1, #f1f8e9);
-        margin: 0; padding: 0;
-    }
-    .container {
-        max-width: 800px;
-        margin: 60px auto;
-        background: white;
-        border-radius: 16px;
-        box-shadow: 0 4px 20px rgba(0,0,0,0.1);
-        padding: 30px 40px;
-    }
-    h2 {
-        text-align: center;
-        color: #1b5e20;
-        margin-bottom: 10px;
-    }
-    p.intro {
-        text-align: center;
-        color: #555;
-        margin-bottom: 20px;
-    }
-    textarea {
-        width: 100%;
-        height: 120px;
-        padding: 12px;
-        border-radius: 8px;
-        border: 1px solid #ccc;
-        font-size: 16px;
-        resize: none;
-        outline: none;
-        transition: all 0.2s;
-    }
-    textarea:focus {
-        border-color: #2e7d32;
-        box-shadow: 0 0 5px rgba(46,125,50,0.4);
-    }
-    .btn-group {
-        margin-top: 15px;
-        text-align: center;
-    }
-    button {
-        background: linear-gradient(135deg, #43a047, #2e7d32);
-        color: white;
-        padding: 10px 20px;
-        font-size: 16px;
-        border: none;
-        border-radius: 6px;
-        cursor: pointer;
-        margin: 0 5px;
-        transition: 0.2s;
-    }
-    button:hover {
-        background: linear-gradient(135deg, #388e3c, #1b5e20);
-        transform: translateY(-1px);
-    }
-    .clear-btn {
-        background: #ef5350;
-    }
-    .clear-btn:hover {
-        background: #c62828;
-    }
-    #status {
-        text-align: center;
-        font-style: italic;
-        color: #777;
-        margin-top: 10px;
-    }
-    .output {
-        margin-top: 20px;
-        background: #f1f8e9;
-        border-left: 4px solid #43a047;
-        padding: 15px;
-        border-radius: 8px;
-        min-height: 60px;
-        white-space: pre-wrap;
-        font-size: 16px;
-        color: #2e7d32;
-    }
-</style>
-</head>
-<body>
-<div class="container">
-    <h2>🌿 BASS++ 推测推理交互演示系统</h2>
-    <p class="intro">输入文本后点击 <b>生成</b>，即可查看模型生成结果。</p>
+    <!DOCTYPE html>
+    <html lang="zh-CN">
+    <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BASS++ 推测推理演示系统</title>
+    <style>
+      body {
+          font-family: 'Segoe UI', Arial, sans-serif;
+          background: linear-gradient(135deg, #e8f5e9, #f9fff5);
+          margin: 0; padding: 0;
+          color: #1b5e20;
+          font-size: 18px;           /* ⬆️ 全局字体更大 */
+          line-height: 1.6;          /* ⬆️ 行距更舒适 */
+        }
+      header{ background:linear-gradient(135deg,#2e7d32,#1b5e20);color:#fff;text-align:center;padding:18px 0;border-bottom-left-radius:14px;border-bottom-right-radius:14px;box-shadow:0 4px 10px rgba(0,0,0,0.1);}
+      h1{margin:0;font-size:22px;} p.subtitle{margin:0;font-size:14px;opacity:.85;}
+      .tabs{text-align:center;margin:16px auto;}
+      .tab-btn{background:#e8f5e9;border:2px solid #2e7d32;color:#2e7d32;padding:8px 18px;margin:0 6px;font-size:15px;font-weight:600;border-radius:8px;cursor:pointer;transition:.2s;}
+      .tab-btn.active{background:#2e7d32;color:#fff;}
+      .tab-btn:hover{filter:brightness(1.1);}
+      .container {
+          max-width: 1100px;   /* ⬆️ 页面主框宽一些 */
+          margin: 40px auto;
+          background: white;
+          border-radius: 20px;
+          box-shadow: 0 6px 24px rgba(0,0,0,0.1);
+          padding: 40px 50px;  /* ⬆️ 内边距更大 */
+        }
+      textarea {
+          width: 100%;
+          height: 160px;         /* ⬆️ 更高的输入框 */
+          padding: 14px;
+          font-size: 18px;       /* ⬆️ 字体更大 */
+          border: 1px solid #ccc;
+          border-radius: 10px;
+          resize: none;
+        }
+      button {
+          background: linear-gradient(135deg, #43a047, #2e7d32);
+          color: white;
+          padding: 14px 24px;   /* ⬆️ 按钮更大 */
+          font-size: 17px;
+          border: none;
+          border-radius: 8px;
+          margin: 8px;
+          cursor: pointer;
+        }
+      button:hover{background:linear-gradient(135deg,#388e3c,#1b5e20);}
+      .clear-btn{background:#ef5350;} .clear-btn:hover{background:#c62828;}
+      .output {
+          background: #f1f8e9;
+          border-left: 5px solid #43a047;
+          padding: 18px;
+          border-radius: 10px;
+          white-space: pre-wrap;
+          color: #2e7d32;
+          font-size: 18px;       /* 输出字体更大 */
+        }
+      #status{text-align:center;color:#555;margin-top:10px;font-style:italic;}
+      #logBox{background:#f9f9f9;border:1px solid #ccc;border-radius:8px;padding:10px;height:400px;overflow-y:scroll;white-space:pre-wrap;font-size:14px;color:#2e7d32;}
+    </style>
+    </head>
+    <body>
+    <header>
+      <h1>🌿 BASS++ 推测推理演示系统</h1>
+      <p class="subtitle">模块一：交互推理对比　｜　模块二：动态分批日志可视化</p>
+    </header>
 
-    <textarea id="inputText" placeholder="请输入文本内容，例如：人工智能的推理机制包括哪些方面？"></textarea>
-
-    <div class="btn-group">
-        <button onclick="generate()">🚀 生成</button>
-        <button class="clear-btn" onclick="clearAll()">🧹 清除</button>
+    <div class="tabs">
+      <button id="tab1" class="tab-btn active">模块一：交互推理对比</button>
+      <button id="tab2" class="tab-btn">模块二：动态分批日志可视化</button>
     </div>
 
-    <p id="status"></p>
-    <div id="output" class="output"></div>
-</div>
+    <!-- 模块一 -->
+    <div id="module1" style="display:block;">
+      <div class="container">
+        <h2>🧩 模型对比</h2>
+        <p>输入文本，点击“生成”以比较 <b>Baseline（自回归）</b> 与 <b>BASS 批处理</b> 的性能</p>
+        <textarea id="inputText" placeholder="例如：请解释推测解码（speculative decoding）的原理。"></textarea><br>
+        <button onclick="generate()">🚀 生成</button>
+        <button class="clear-btn" onclick="clearAll()">🧹 清除</button>
+        <p id="status"></p>
+        <div id="output" class="output"></div>
+      </div>
+    </div>
 
-<script>
-async function generate() {
-    const text = document.getElementById("inputText").value.trim();
-    const outputBox = document.getElementById("output");
-    const status = document.getElementById("status");
+    <!-- 模块二 -->
+    <div id="module2" style="display:none;">
+      <div class="container">
+        <h2>📊 动态分批日志可视化</h2>
+        <p>点击下方按钮启动动态分批算法并查看实时日志输出：</p>
+        <button id="startSimBtn">▶️ 开始模拟</button>
+        <span id="simStatus" style="margin-left:10px;color:#555;">未开始</span>
+        <pre id="logBox"></pre>
+      </div>
+    </div>
 
-    if (!text) {
-        alert("请输入文本");
-        return;
-    }
+    <script>
+      // 模块切换
+      document.getElementById("tab1").onclick = () => {
+        document.getElementById("module1").style.display = "block";
+        document.getElementById("module2").style.display = "none";
+        document.getElementById("tab1").classList.add("active");
+        document.getElementById("tab2").classList.remove("active");
+      };
+      document.getElementById("tab2").onclick = () => {
+        document.getElementById("module1").style.display = "none";
+        document.getElementById("module2").style.display = "block";
+        document.getElementById("tab2").classList.add("active");
+        document.getElementById("tab1").classList.remove("active");
+      };
 
-    outputBox.innerHTML = "";
-    status.textContent = "⏳ 正在生成中，请稍候...";
+      // 模块一：推理对比
+      async function generate() {
+        const text = document.getElementById("inputText").value.trim();
+        const outputBox = document.getElementById("output");
+        const status = document.getElementById("status");
+        if (!text) { alert("请输入文本"); return; }
+        outputBox.innerHTML = ""; status.textContent = "⏳ 正在生成中...";
+        try {
+          const res = await fetch("/predict", {
+            method:"POST", headers:{ "Content-Type":"application/json" },
+            body:JSON.stringify({prompt:text})
+          });
+          const result = await res.json();
+          status.textContent = "✅ 对比完成";
+          outputBox.innerHTML = `
+          🧩 <b>Baseline（普通自回归）</b><br>
+          延迟：${result.baseline.latency}s　吞吐：${result.baseline.throughput} tok/s<br>
+          <div style="background:#f5f5f5;border-radius:6px;padding:8px;">${result.baseline.text}</div><hr>
+          🌿 <b>BASS 批处理</b><br>
+          批大小：${result.bass.batch}　延迟：${result.bass.latency}s　吞吐：${result.bass.throughput} tok/s<br>
+          <div style="background:#e8f5e9;border-radius:6px;padding:8px;">${result.bass.text}</div><hr>
+          📈 吞吐提升：x${result.compare.throughput_gain}　延迟提升：x${result.compare.latency_gain}`;
+        } catch (err) {
+          status.textContent = "❌ 出错：" + err;
+        }
+      }
 
-    try {
-        const response = await fetch("/predict", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ "prompt": text })
-        });
+      function clearAll(){
+        document.getElementById("inputText").value="";
+        document.getElementById("output").textContent="";
+        document.getElementById("status").textContent="";
+      }
 
-        const result = await response.json();
-        status.textContent = "✅ 对比完成";
+      // 模块二：动态日志
+      const startBtn=document.getElementById("startSimBtn");
+      const logBox=document.getElementById("logBox");
+      const simStatus=document.getElementById("simStatus");
+      startBtn.addEventListener("click", async()=>{
+        logBox.textContent=""; simStatus.textContent="运行中...";
+        await fetch("/start_simulation",{method:"POST"});
+        const evt=new EventSource("/log_stream");
+        evt.onmessage=(e)=>{
+          try{
+            const data=JSON.parse(e.data);
+            logBox.textContent+=data.log+"\\n";
+            logBox.scrollTop=logBox.scrollHeight;
+            if(data.log.includes("结束")){ simStatus.textContent="✅ 已结束"; evt.close(); }
+          }catch{}
+        };
+      });
+    </script>
+    </body>
+    </html>
+    """)
 
-        outputBox.innerHTML = `
-        <h4>🧩 Baseline（普通自回归）</h4>
-        <div><b>延迟：</b> ${result.baseline.latency}s</div>
-        <div><b>吞吐：</b> ${result.baseline.throughput} tokens/s</div>
-        <div style="background:#f5f5f5; padding:10px; border-radius:6px;">${result.baseline.text}</div>
-        <hr>
-        <h4>🌿 BASS 批处理模式</h4>
-        <div><b>批大小：</b> ${result.bass.batch}</div>
-        <div><b>延迟：</b> ${result.bass.latency}s</div>
-        <div><b>吞吐：</b> ${result.bass.throughput} tokens/s</div>
-        <div style="background:#e8f5e9; padding:10px; border-radius:6px;">${result.bass.text}</div>
-        <hr>
-        <h4>📈 对比结果</h4>
-        <div><b>吞吐提升：</b> x${result.compare.throughput_gain}</div>
-        <div><b>延迟提升：</b> x${result.compare.latency_gain}</div>
-        `;
-    } catch (err) {
-        status.textContent = "❌ 发生错误：" + err;
-        outputBox.textContent = "";
-    }
-}
-
-function clearAll() {
-    document.getElementById("inputText").value = "";
-    document.getElementById("output").textContent = "";
-    document.getElementById("status").textContent = "";
-}
-</script>
-</body>
-</html>
-""")
 
 pipeline = None
 
 GLOBAL_SERVER = None
 
 class Server:
-    def __init__(self, approx_model_name, target_model_name) -> None:
-        self._device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        
-        logging.info("begin load models")
-        self._small_model = AutoModelForCausalLM.from_pretrained(approx_model_name, trust_remote_code=True).to(self._device)
-        self._large_model = AutoModelForCausalLM.from_pretrained(target_model_name, trust_remote_code=True).to(self._device)
-        self._tokenizer = AutoTokenizer.from_pretrained(approx_model_name)
-        logging.info("fininsh load models")
-          
+    def __init__(self, approx_model_name, target_model_name, args = None) -> None:
+        self._device = args.device if hasattr(args, "device") else ("cuda" if torch.cuda.is_available() else "cpu")
+
+        print(f"[INFO] Loading models on {self._device} ...")
+
+        torch_dtype = torch.float16 if "cuda" in self._device else torch.float32
+
+        self._tokenizer = AutoTokenizer.from_pretrained(approx_model_name, trust_remote_code=True)
+
+        # 小模型（approx）
+        self._small_model = AutoModelForCausalLM.from_pretrained(
+            approx_model_name,
+            trust_remote_code=True,
+            torch_dtype=torch_dtype,
+            low_cpu_mem_usage=True,
+            device_map={"": self._device},
+        )
+
+        # 大模型（target）
+        self._large_model = AutoModelForCausalLM.from_pretrained(
+            target_model_name,
+            trust_remote_code=True,
+            torch_dtype=torch_dtype,
+            low_cpu_mem_usage=True,
+            device_map={"": self._device},
+        )
+
+        print(f"[INFO] Models loaded successfully on {self._device}.")
+        if "cuda" in self._device:
+            print(
+                f"[INFO] Allocated: {torch.cuda.memory_allocated() / 1e9:.2f} GB, Reserved: {torch.cuda.memory_reserved() / 1e9:.2f} GB")
+
         self.num_tokens = 40
         self.top_k = 10
         self.top_p = 0.9
@@ -280,10 +318,66 @@ def predict():
     result = GLOBAL_SERVER.compare_baseline_vs_bass(prompt)
     return jsonify(result)
 
+@app.route("/start_simulation", methods=["POST"])
+def start_simulation():
+    """
+    启动 dynamic_batcher.py 作为子进程，并异步读取日志
+    """
+    global simulation_running, process_thread
+    if simulation_running:
+        return jsonify({"status": "already_running"})
+    simulation_running = True
+
+    def run_and_capture():
+        global simulation_running
+        try:
+            cmd = [
+                "python", "sampling/dynamic_batcher.py",
+                "--device", GLOBAL_SERVER._device,
+                "--mode", "dynamic",
+                "--max_samples", "200"
+            ]
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+            print(f"[SIM] 启动命令: {' '.join(cmd)}")
+            for line in iter(proc.stdout.readline, ''):
+                if line:
+                    log_queue.put(line.strip())
+            proc.stdout.close()
+            proc.wait()
+        except Exception as e:
+            log_queue.put(f"[ERROR] {e}")
+        finally:
+            simulation_running = False
+            log_queue.put("[SIM] 结束。")
+
+    process_thread = threading.Thread(target=run_and_capture, daemon=True)
+    process_thread.start()
+    return jsonify({"status": "started"})
+
+
+@app.route("/log_stream")
+def log_stream():
+    """
+    SSE 实时推送 dynamic_batcher.py 的日志
+    """
+    def event_stream():
+        while True:
+            try:
+                line = log_queue.get(timeout=1.0)
+                yield f"data: {json.dumps({'log': line})}\n\n"
+            except Exception:
+                yield f": keep-alive {int(time.time())}\n\n"
+    return app.response_class(event_stream(), mimetype="text/event-stream")
+
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--device', type=str, default='cuda:3', help='选择运行设备，如 cuda:0 或 cuda:3')
+    args = parser.parse_args()
+
     GLOBAL_SERVER = Server(
         approx_model_name="../data/models/bloom-560m",
-        target_model_name="../data/models/bloomz-7b1"
+        target_model_name="../data/models/bloomz-7b1",
+        args = args
     )
     # Start the Flask service
     app.run(host='0.0.0.0', port=5000)
